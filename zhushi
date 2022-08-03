@@ -1,0 +1,20 @@
+//创建简单job
+//targetJob := &v1.Job{}
+//targetJob.Namespace = "demo"                                                         // 所属的namespace，如果没有，需要先创建该namespace
+//targetJob.Name = fmt.Sprintf("j-" + time.Now().Format("2006-01-02-15-04-05") + "-w") // job的名字，取一个合法的名字即可
+//
+//container := corev1.Container{Name: "perl-01"}
+//container.Image = "perl"                                                        // 指定容器镜像
+//container.Command = []string{"perl", "-Mbignum=bpi", "-wle", "print bpi(2000)"} // 指定启动命令
+//targetJob.Spec.Template.Spec.Containers = []corev1.Container{container}
+//
+//// k8s pod默认的restartPolicy是"Always",job不支持"Always",必须改成"Never"或"OnFailure"
+//targetJob.Spec.Template.Spec.RestartPolicy = corev1.RestartPolicyNever
+//
+//// GetClientSet()返回一个*kubernetes.Clientset类型的k8s客户端对象
+//targetJob, err = clientset.BatchV1().Jobs(targetJob.Namespace).Create(context.TODO(), targetJob, metaV1.CreateOptions{})
+//if err != nil {
+//	fmt.Printf("%v\n", err)
+//}
+//jobInfo, err := clientset.BatchV1().Jobs(targetJob.Namespace).Get(context.TODO(), targetJob.Name, metaV1.GetOptions{})
+//fmt.Println(jobInfo)
