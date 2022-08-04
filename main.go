@@ -8,7 +8,6 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metaV1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -46,8 +45,13 @@ func main() {
 	// 错误处理 Examples for error handling:
 	//handleError(clientset)
 
-	getPods(clientset)
-
+	//getPods(clientset)
+	nq := common.NewNamespaceQuery([]string{"klish"})
+	podList, err := GetPodList(clientset, nq)
+	if err != nil {
+		fmt.Println(err)
+	}
+	fmt.Println(podList)
 	// namespace列表 default kube-node-lease kube-publi kube-system meshnet
 	//namespaces := getNamespace(clientset)
 	//fmt.Println("------------namespaces:",namespaces)
@@ -81,73 +85,78 @@ func getConfig() *restclient.Config {
 	return config
 }
 
-type Time struct {
-	time.Time `protobuf:"-"`
-}
+// GetPodList returns a list of all Pods in the cluster.
+func GetPodList(clientset *kubernetes.Clientset, nsQuery *common.NamespaceQuery) (*common.PodList, error) {
+	log.Print("Getting list of all pods in the cluster")
 
-// ToRequestParam returns K8s API namespace query for list of objects from this namespaces.
-// This is an optimization to query for single namespace if one was selected and for all
-// namespaces otherwise.
-func (n common.NamespaceQuery) ToRequestParam() string {
-	if len(n.namespaces) == 1 {
-		return n.namespaces[0]
-	}
-	return ""
-}
-
-// Matches returns true when the given namespace matches this query.
-func (n *NamespaceQuery) Matches(namespace string) bool {
-	if len(n.namespaces) == 0 {
-		return true
+	channels := &common.ResourceChannels{
+		PodList: common.GetPodListChannelWithOptions(clientset, nsQuery, metaV1.ListOptions{}, 1),
 	}
 
-	for _, queryNamespace := range n.namespaces {
-		if namespace == queryNamespace {
-			return true
-		}
-	}
-	return false
+	return GetPodListFromChannels(channels)
 }
 
-func getPods(clientset *kubernetes.Clientset) {
-	//得到所有pod
-	//pods, err := clientset.CoreV1().Pods("").List(context.TODO(), metaV1.ListOptions{})
-	//if err != nil {
-	//	panic(err.Error())
-	//}
-	//namespace := "klish"
-	var nsQuery *NamespaceQuery = &NamespaceQuery{[]string{"klish"}}
-	//var nsQuery *NamespaceQuery =  &NamespaceQuery{[]string{}}
-	list, err := clientset.CoreV1().Pods(nsQuery.ToRequestParam()).List(context.TODO(), metaV1.ListOptions{})
+// GetPodListFromChannels returns a list of all Pods in the cluster
+// reading required resource list once from the channels.
+func GetPodListFromChannels(channels *common.ResourceChannels) (*common.PodList, error) {
+	pods := <-channels.PodList.List
+	err := <-channels.PodList.Error
 	if err != nil {
-		fmt.Println(err)
+		return nil, err
 	}
-	var filteredItems []v1.Pod
-	for _, item := range list.Items {
-		if nsQuery.Matches(item.ObjectMeta.Namespace) {
-			filteredItems = append(filteredItems, item)
-		}
-	}
-	list.Items = filteredItems
-	temp, err := clientset.CoreV1().Events(nsQuery.ToRequestParam()).List(context.TODO(), metaV1.ListOptions{})
-	//fmt.Println(temp)
-	//fmt.Println(klishPods)
-	//fmt.Println()a
-	//fmt.Printf("------------There are %d pods in the cluster\n", len(pods.Items))
 
-	type ResultPods struct {
-		Name              string            `json:"name,omitempty" protobuf:"bytes,1,opt,name=name"`
-		Namespace         string            `json:"namespace,omitempty" protobuf:"bytes,3,opt,name=namespace"`
-		UID               types.UID         `json:"uid,omitempty" protobuf:"bytes,5,opt,name=uid,casttype=k8s.io/kubernetes/pkg/types.UID"`
-		CreationTimestamp Time              `json:"creationTimestamp,omitempty" protobuf:"bytes,8,opt,name=creationTimestamp"`
-		Labels            map[string]string `json:"labels,omitempty" protobuf:"bytes,11,rep,name=labels"`
+	podList := ToPodList(pods.Items)
+	podList.Status = common.GetStatus(pods)
+	return &podList, nil
+}
+func toPod(pod *v1.Pod) common.Pod {
+	podDetail := common.Pod{
+		ObjectMeta:      common.NewObjectMeta(pod.ObjectMeta),
+		TypeMeta:        common.NewTypeMeta(common.ResourceKindPod),
+		Status:          common.GetPodStatus(*pod),
+		RestartCount:    common.GetRestartCount(*pod),
+		NodeName:        pod.Spec.NodeName,
+		ContainerImages: common.GetContainerImages(&pod.Spec),
 	}
+
+	return podDetail
+}
+func ToPodList(pods []v1.Pod) common.PodList {
+	podList := common.PodList{
+		Pods: make([]common.Pod, 0),
+	}
+
+	podList.ListMeta = common.ListMeta{TotalItems: len(pods)}
+
+	for _, pod := range pods {
+		podDetail := toPod(&pod)
+		podList.Pods = append(podList.Pods, podDetail)
+	}
+
+	return podList
 }
 
-func GetPodListFromChannels(podList *v1.PodList) *v1.PodList {
-	pods := podList.Items
-
-}
+//func getPods(clientset *kubernetes.Clientset){
+//	//得到所有pod
+//	//pods, err := clientset.CoreV1().Pods("").List(context.TODO(), metaV1.ListOptions{})
+//	//if err != nil {
+//	//	panic(err.Error())
+//	//}
+//	//namespace := "klish"
+//	var nsQuery *common.NamespaceQuery =  &common.NamespaceQuery{[]string{"klish"}}
+//	//var nsQuery *NamespaceQuery =  &NamespaceQuery{[]string{}}
+//	list, err := clientset.CoreV1().Pods(nsQuery.ToRequestParam()).List(context.TODO(), metaV1.ListOptions{})
+//	if err != nil {
+//		fmt.Println(err)
+//	}
+//	var filteredItems []v1.Pod
+//	for _, item := range list.Items {
+//		if nsQuery.Matches(item.ObjectMeta.Namespace) {
+//			filteredItems = append(filteredItems, item)
+//		}
+//	}
+//	list.Items = filteredItems
+//}
 
 func handleError(clientset *kubernetes.Clientset) {
 	// - Use helper functions like e.g. errors.IsNotFound()
