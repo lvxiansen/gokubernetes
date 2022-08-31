@@ -1,16 +1,20 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
 	"gokuberntes/common"
+	"io"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metaV1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
 	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/tools/remotecommand"
 	"log"
 	"os"
 	"path/filepath"
@@ -26,9 +30,103 @@ import (
 	// _ "k8s.io/client-go/plugin/pkg/client/auth/openstack"
 )
 
+type RestClientApp struct {
+	ClientSet *kubernetes.Clientset
+	Config    *restclient.Config
+	Namespace string
+	PodName   string
+}
+
+func NewRestClientApp(clientSet *kubernetes.Clientset, config *restclient.Config, nameSpace, podName string) *RestClientApp {
+	return &RestClientApp{ClientSet: clientSet, Config: config, Namespace: nameSpace, PodName: podName}
+}
+
+func ExecCommandInPodContainer(clientset *kubernetes.Clientset, config *restclient.Config, namespace string,
+	podName string, command []string) ([]string, error) {
+	//var stdout,stderr bytes.Buffer
+	reader, writer := io.Pipe()
+	var (
+		cmdOutput []string
+	)
+
+	go func() {
+		scanner := bufio.NewScanner(reader)
+		for scanner.Scan() {
+			line := scanner.Text()
+			fmt.Println("line", line)
+			cmdOutput = append(cmdOutput, line)
+		}
+	}()
+	stdin := reader
+	stdout := writer
+	stderr := writer
+	tty := false
+
+	//构建请求
+	req := clientset.CoreV1().RESTClient().Post()
+	req.Resource("pods").
+		Name(podName). //podName
+		Namespace(namespace).
+		SubResource("exec")
+
+	req.VersionedParams(&v1.PodExecOptions{
+		Command: command,
+		//Container: containerName,
+		//Command: []string{"sh", "hello.sh"},
+		Stdin:  stdin != nil,
+		Stdout: stdout != nil,
+		Stderr: stderr != nil,
+		TTY:    tty,
+	}, scheme.ParameterCodec)
+
+	// 创建执行器
+	//fmt.Println("url",req.URL())
+	exec, err := remotecommand.NewSPDYExecutor(config, "POST", req.URL())
+	if err != nil {
+		fmt.Println("NewSPDYExecutor", err)
+		return nil, err
+	}
+	//screen := struct {
+	//	io.Reader
+	//	io.Writer
+	//}{os.Stdin, os.Stdout}
+	// 执行命令
+	err = exec.Stream(remotecommand.StreamOptions{
+		//Stdin: os.Stdin,
+		Stdin:  stdin,
+		Stdout: stdout,
+		Stderr: stderr,
+		Tty:    tty,
+	})
+	if err != nil {
+		fmt.Print("stream", err)
+		return nil, err
+	}
+	//res := stdout.String()
+
+	return cmdOutput, nil
+	//fmt.Println("stdout.String()",stdout.String())
+	////fmt.Println("stderr.String()",stderr.String())
+	//arrRes := strings.Split(res," ")
+	//fmt.Println(arrRes[0])
+}
+
+func (rca *RestClientApp) GetClusterInfo(cmd []string) ([]string, error) {
+	//fmt.Println("rca",rca.ClientSet,rca.Config,rca.Namespace,rca.PodName,cmd)
+	result, err := ExecCommandInPodContainer(rca.ClientSet, rca.Config, rca.Namespace, rca.PodName, cmd)
+	fmt.Println("result", result)
+	if err != nil {
+		fmt.Println("Error" + err.Error())
+		return nil, err
+	}
+	return result, nil
+}
+
 func main() {
 	// 读取配置文件
 	config := getConfig()
+
+	//config := loadConfig(kbconfig)
 
 	// 创建kubernetes客户端
 	clientset, err := kubernetes.NewForConfig(config)
@@ -52,6 +150,35 @@ func main() {
 		fmt.Println(err)
 	}
 	fmt.Println(podList)
+
+	//app := NewRestClientApp(clientset,config,"klish","ce1")
+	//cmd := []string{"ip","neigh"}
+	//sRes,err := app.GetClusterInfo(cmd)
+	//for _,v := range sRes {
+	//	fmt.Println(v)
+	//}
+	//fmt.Println(sRes)
+
+	result := [][]string{}
+	for _, pod := range podList.Pods {
+		//fmt.Println(pod)
+		app := NewRestClientApp(clientset, config, pod.ObjectMeta.Namespace, pod.ObjectMeta.Name)
+		//cmd := []string{"ip","neigh"}
+		//cmd := []string{"route","-n"}
+		cmd := []string{"ip", "link"}
+		sRes, err := app.GetClusterInfo(cmd)
+		fmt.Println(sRes)
+		if err != nil {
+			fmt.Println("err", err)
+		}
+		result = append(result, sRes)
+	}
+
+	for _, v := range result {
+		fmt.Println(v)
+	}
+
+	//fmt.Println(strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()), err)
 	// namespace列表 default kube-node-lease kube-publi kube-system meshnet
 	//namespaces := getNamespace(clientset)
 	//fmt.Println("------------namespaces:",namespaces)
@@ -65,7 +192,6 @@ func main() {
 
 	//service列表 kubernetes default map  kube-dns kube-system
 	//getService(clientset,namespaces)
-
 }
 
 func getConfig() *restclient.Config {
@@ -77,13 +203,21 @@ func getConfig() *restclient.Config {
 		kubeconfig = flag.String("kubeconfig", "", "absolute path to the kubeconfig file")
 	}
 	flag.Parse()
-
 	config, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
 	if err != nil {
 		panic(err.Error())
 	}
 	return config
+
 }
+
+//func loadConfig(kubeconfig string) *restclient.Config {
+//	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
+//	if err != nil {
+//		panic(err.Error())
+//	}
+//	return config
+//}
 
 // GetPodList returns a list of all Pods in the cluster.
 func GetPodList(clientset *kubernetes.Clientset, nsQuery *common.NamespaceQuery) (*common.PodList, error) {
